@@ -44,10 +44,9 @@ Z_ACCEPT  = THRESHOLD_RANGE
 ALT_REACHED_EPS   = 1.0       # 이륙 고도 도달 허용오차 [m]
 TAKEOFF_HOLD_SEC  = 2.0       # 이륙 고도 도달 후 호버 유지 시간 [s]
 
-# ★ 새로 추가: 웨이포인트 도착 시 동작
+# ★ 웨이포인트 도착 시 동작
 WP_HOVER_SEC      = 5.0       # 각 웨이포인트에서 5초 호버
 ALIGN_HOLD_SEC    = 1.0       # 기수 정렬 시간(제자리에서 yaw 맞추는 시간)
-# ────────────────────────────────────────────────
 
 class OffboardControl(Node):
     def __init__(self):
@@ -99,6 +98,9 @@ class OffboardControl(Node):
         self.names_sorted = names_sorted
         self.init_yaw_deg = self._yaw_deg_to(self.ned_wps[names_sorted[0]], self.ned_wps[names_sorted[1]])
         self.get_logger().info(f"초기 yaw(deg): {self.init_yaw_deg:.1f}")
+
+        # ★ 추가: 마지막으로 보낸 yaw를 저장/유지할 변수
+        self.curr_yaw_deg = self.init_yaw_deg
 
         # 상태 변수
         self.state = "NOT_READY"
@@ -230,9 +232,9 @@ class OffboardControl(Node):
             return
 
         if self.state == "NOT_READY":
-            # 1) 워밍업: 현재 위치 유지 + 초기 yaw(첫 구간 방향)
+            # 1) 워밍업: 현재 위치 유지 + 현재(curr) yaw 유지
             self.offboard_setpoint_counter += 1
-            self._pub_pos_sp(self.lpos.x, self.lpos.y, self.lpos.z, self.init_yaw_deg)
+            self._pub_pos_sp(self.lpos.x, self.lpos.y, self.lpos.z, self.curr_yaw_deg)
 
             # 2) ARM
             if self.offboard_setpoint_counter == 20:
@@ -244,9 +246,9 @@ class OffboardControl(Node):
                 self._offboard()
                 self.get_logger().info("OFFBOARD 모드 전환")
 
-            # 4) 제자리 수직 상승: x,y 고정, z만 목표(-35 m)로, yaw는 초기값 유지
+            # 4) 제자리 수직 상승: x,y 고정, z만 목표로, yaw는 curr 유지
             if self.offboard_setpoint_counter >= 40:
-                self._pub_pos_sp(self.lpos.x, self.lpos.y, TAKEOFF_ALTITUDE_NED, self.init_yaw_deg)
+                self._pub_pos_sp(self.lpos.x, self.lpos.y, TAKEOFF_ALTITUDE_NED, self.curr_yaw_deg)
 
                 # 이륙 고도 도달 여부(절대오차) 확인
                 if abs(self.lpos.z - TAKEOFF_ALTITUDE_NED) <= ALT_REACHED_EPS:
@@ -266,9 +268,10 @@ class OffboardControl(Node):
             curr = self.ned_wps[names[self.segment_idx - 1]]
             nxt  = self.ned_wps[names[self.segment_idx]]
 
-            # 이동 (leg 방향으로 yaw)
+            # 이동 (leg 방향으로 yaw) → 보존 yaw 업데이트 후 사용
             yaw_deg = self._yaw_deg_to(curr, nxt)
-            self._pub_pos_sp(nxt["x"], nxt["y"], nxt["z"], yaw_deg)
+            self.curr_yaw_deg = yaw_deg
+            self._pub_pos_sp(nxt["x"], nxt["y"], nxt["z"], self.curr_yaw_deg)
 
             # 도착 판정
             if self._reached(nxt):
@@ -281,8 +284,8 @@ class OffboardControl(Node):
         elif self.state == "WP_HOVER":
             # 방금 도착한 웨이포인트 위치로 고정해서 5초 호버
             wp = self.ned_wps[self.current_wp_name]
-            # yaw는 유지(변경 없이), 위치만 고정
-            self._pub_pos_sp(wp["x"], wp["y"], wp["z"], self.init_yaw_deg)  # yaw는 유지할 값이 없으면 초기 yaw로 고정
+            # ★ yaw는 curr_yaw_deg 유지(초기 yaw로 리셋 금지)
+            self._pub_pos_sp(wp["x"], wp["y"], wp["z"], self.curr_yaw_deg)
 
             self.wp_hold_ticks += 1
             if (self.wp_hold_ticks * self.dt) >= WP_HOVER_SEC:
@@ -303,8 +306,10 @@ class OffboardControl(Node):
             wp_next = self.ned_wps[self.names_sorted[self.segment_idx + 1]]
             yaw_next_deg = self._yaw_deg_to(wp_now, wp_next)
 
+            # ★ 다음 leg 방향으로 보존 yaw 업데이트
+            self.curr_yaw_deg = yaw_next_deg
             # 위치는 고정, yaw만 다음 방향
-            self._pub_pos_sp(wp_now["x"], wp_now["y"], wp_now["z"], yaw_next_deg)
+            self._pub_pos_sp(wp_now["x"], wp_now["y"], wp_now["z"], self.curr_yaw_deg)
 
             self.align_hold_ticks += 1
             if (self.align_hold_ticks * self.dt) >= ALIGN_HOLD_SEC:
@@ -333,5 +338,3 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         print(e)
-
-        #hi
